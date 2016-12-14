@@ -1,24 +1,70 @@
 
-![](img.png)
+![logo](https://static.creatordev.io/logo-md-s.svg)
+
+# The Weather Station - Lumpy 
+
+The Weather Station project, codenamed - **Lumpy**, allows you to create your DYI
+weather station, using [Creator Ci40](https://docs.creatordev.io/ci40/) and the
+[Click sensors](http://www.mikroe.com/click/). The system uses the 
+[Creator IoT Framework](https://docs.creatordev.io/deviceserver/guides/iot-framework/), 
+composed by AwaLWM2M and the 
+[Device Server](https://docs.creatordev.io/deviceserver/guides/iot-framework/#device-server), 
+providing connectivity for the sensors.
 
 ---
 
-## The Lumpy Ci40 application  
-The Lumpy Ci40 is part of bigger project called "Weather Station". Using code from this repository you will be able to handle various sensor clicks inserted into your Ci40 board. Values measured by those clicks will be sent to Creator Device Server. 
-
 ## Environment for Weather Station project  
-The complete IoT Environment is builded with following components:
-* LWM2M cloud server  
-* Ci40 application which allows usage of clicks in mirkroBUS sockets.
-* Contiki based applications build for clicker platform:
-  *  [Temperature sensor](https://github.com/CreatorKit/temperature-sensor)
-* a mobile application to present Weather measurements.  
+The complete IoT Environment is built using the following components:
+* IoT Framework
+* Ci40 Application - Allows the usage of clicks in mirkroBUS sockets
+* Contiki based applications - build for 6LoWPAN clicker platform:
+  *  [Temperature Sensor](https://github.com/CreatorKit/temperature-sensor)
+* Mobile Application - Presents weather measurements  
 
-## Ci40 application specific dependencies
-This application uses the [Awa LightweightM2M](https://github.com/FlowM2M/AwaLWM2M) implementation of the OMA Lightweight M2M protocol to provide a secure and standards compliant device management solution without the need for an intimate knowledge of M2M protocols. Additionnaly MikroE Clicks support is done through [LetMeCreate library](https://github.com/CreatorDev/LetMeCreate).
+## Application Dependencies
 
-## Integration with openWrt
-It's assumed that you have build envriroment for ci40 openWrt described [here](https://github.com/CreatorKit/build) and this is located in folder `work`. So structure inside will be:
+The Weather Station uses [Awa LwM2M](https://github.com/FlowM2M/AwaLWM2M), an 
+implementation of OMA Lightweight M2M protocol. Awa provides a secure and standard 
+compliant device management solution, without the need for an intimate knowledge of 
+M2M protocols.  
+The MikroE Clicks (sensors) use
+[LetMeCreate](https://github.com/CreatorDev/LetMeCreate), an open source library 
+design to speed up the development with Ci40.
+
+
+### How to Install Dependencies on Ci40
+
+AwaLWM2M and LetMeCreate have a package ready to install on OpneWRT. For this, 
+on your Ci40 console execute:
+
+```bash
+opkg update 
+opkg install awalwm2m
+opkg install letmecreate 
+```
+
+## How to Install the Application
+
+To install the Weather Station, you can use the prebuild package (quick and easy),
+or you can build from the source code, if you plan to edit source (advanced users).
+
+### Install the Prebuild Package
+
+This quick process consists in transfer the latest release .ipk package file 
+onto Ci40, for example using **WGET**.
+Then on the package directory, to complete the installation execute:
+```bash
+opkg install package_name
+```
+
+### Building From Source
+
+This process fits for the most developers who want to edit and build from the 
+source code, confortable setting the building environment for OpenWRT applications. 
+
+It's assumed that you have build envriroment for ci40 openWrt described 
+[here](https://github.com/CreatorKit/build) and this is located in folder `work`. 
+So structure inside will be:
 
     work/
       build/  
@@ -35,21 +81,91 @@ Clone this repository into `work/packages`, after this operation structure will 
       packages/
         weather-station-gateway
 
-Now copy folder from `packages/weather-station-gateway/feeds` into `work/dist/openwrt/openwrt-ckt-feeds`.
+Now copy folder from `packages/weather-station-gateway/feeds` into `work/dist/openwrt-ckt-feeds`.
 Then execute commands:
 
     cd work/dist/openwrt
     ./scripts/feeds update
-    ./script/feeds update weather-station-gateway
-    ./script/feeds install weather-station-gateway
+    ./scripts/feeds update weather-station-gateway
+    ./scripts/feeds install weather-station-gateway
     make menuconfig
 
-in menuconfig please press `/` and type `weather-station-gateway` one occurrence will appear. Mark it with `<*>` and do save of config.
-In terminal type `make` to build openwrt image with this application. After uploading to ci40 edit file located in `/etc/init.d/weather_station_initd` and put proper switch arguments related to clicks which you put into mikroBus port.
+In menuconfig please press `/` and type `weather-station-gateway` one occurrence 
+will appear. Mark it with `<*>` and do save of config.
+In terminal type `make` to build openwrt image with this application.
+After uploading to ci40 edit file located in `/etc/init.d/weather_station_initd` 
+and put proper switch arguments related to clicks which you put into mikroBus port.
 
-## Setup for execution - development
-While Lumpy uses Awa Client Deamon to communicate with Cloud LWM2M server it requires few things to be done before project will run. First of all you need to go to CreatorKit console and create certificate which will be used to make secure connection. If you havent done this earlier, you will find usefull informations on [ Creator Device Server](https://docs.creatordev.io/deviceserver/) page. Then you have to provide IPSO object definitions, to do so please run `clientObjectsDefine.sh` shript from `scripts` folder (make sure Awa client deamon is working!). And here you go!
-Wait! No! Put some clicks into Ci40 mikroBUS, and then you can execute Lumpy with one of following options:
+---
+
+## Setup For Execution
+
+Lumpy implements an AwaLWM2M Client to communicate the with the Creator Device 
+Server and its required few steps to be done before running the project. (Please, 
+verify if you have the application and its dependencies installed, described in 
+the previous steps).  
+
+1. First of all go to 
+[**Creator Developer Console**](http://console.creatordev.io/), create an account 
+and create a certificate. Certificates are used to establish a secure connection,
+between the AwaLWM2M Client (Ci40) and the Device Server. Then, transfer your
+**certificate.crt** into Ci40.  
+
+2. Then execute the AwaLWM2M daemon. This daemon creates the AwaLWM2M client and 
+establishes the connection against the device server. Execute on Ci40 console: 
+
+```bash
+ awa_clientd --bootstrap coaps://deviceserver.creatordev.io:15684 -s -c /root/certificate.crt --endPointName "weather_station" -d
+```
+**Note:** As the client is running as a daemon on background, any log will be 
+displayed on the console. However is possible to verify the process running on 
+background.
+
+3. Then, you have to provide and map IPSO object definitions for each sensor.
+On **/usr/bin** you can find a script to execute the mapping. Execute on Ci40
+console:
+
+```bash
+cd /usr/bin
+./clientObjectsDefine.sh
+```
+
+**NOTE:** Make sure the AwaLWM2M Client Daemon is working. 
+
+4. Finaly, connect a [thermo3 click] (http://www.mikroe.com/click/thermo3/) in 
+Ci40 MikroBUS 1 and execute the application.
+
+```bash
+./weatherStation -1 thermo3 -s 5 -v 5
+```
+
+If you check the [developer console](http://console.creatordev.io/), on the devices 
+section is displayed a new "device" named - **weather_station**. If you explore
+the objects, on **3303** its seen the temperature value measured by the sensor.
+
+## Supported Clicks
+
+From wide range of [MikroE clicks](http://www.mikroe.com/index.php?url=store/click/) 
+in this project you can use:
+
+| Click                                                   | weatherStation argument name |
+|-------------------------------------------------------- | ---------------------------- | 
+| [Air Quality](http://www.mikroe.com/click/air-quality/) | air                          |
+| [Carbon Monoxide](http://www.mikroe.com/click/co/)      | co                           |
+| [Thermo3](http://www.mikroe.com/click/thermo3/)         | thermo3                      |
+| [Thunder](http://www.mikroe.com/click/thunder/)         | thunder                      |
+| [Weather](http://www.mikroe.com/click/weather/)         | weather                      |
+
+
+## Help
+
+To see all the options available, execute:
+
+```bash
+./weatherStation -h
+```
+
+It will be printed:
 
 | Switch        | Description |
 |---------------|----------|
@@ -59,17 +175,25 @@ Wait! No! Put some clicks into Ci40 mikroBUS, and then you can execute Lumpy wit
 |-v, --logLevel | Debug level from 1 to 5 (default:info): fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)|
 |-h, --help     | prints help|
 
-Please refer to section 'Supprted clicks' to obtain argument values for switch --click1 and --click2. If one of slots is empty you can skip proper switch or set it's value to `none`.
+Please refer to section 'Supported Clicks' to obtain argument values for switch 
+--click1 and --click2. If one of slots is empty you can skip proper switch or set 
+it's value to `none`.  
 
-## Supported clicks
-From wide range of [MikroE clicks](http://www.mikroe.com/index.php?url=store/click/) in this project you can use:
+If you have any problems installing or utilising the weather station, 
+please look into our [Creator Forum](https://forum.creatordev.io). 
 
-| Click                | Argument |
-|--------------------- |----------|
-| [Air Quality](http://www.mikroe.com/click/air-quality/) | air |
-| [Carbon monoxide](http://www.mikroe.com/click/co/) | co  |
-| [Thermo3](http://www.mikroe.com/click/thermo3/) | thermo3 |
-| [Thunder](http://www.mikroe.com/click/thunder/) | thunder |
-| [Weather](http://www.mikroe.com/click/weather/) | weather |
+Otherwise, If you have come across a nasty bug or would like to suggest new 
+features to be added then please go ahead and open an issue or a pull request 
+against this repo.
+
+## License
+
+Please see the [license](LICENSE) file for a detailed explanation
+
+## Contributing
+
+Any Bug fixes and/or feature enhancements are welcome. Please see the 
+[contributing](CONTRIBUTING.md) file for a detailed explanation.
+
 
 ----
