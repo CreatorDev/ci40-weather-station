@@ -312,7 +312,7 @@ static void readSerialNumberFromEthernetMAC(char *address, int port)
     AwaError result = AwaClientSetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
     if (result != AwaError_Success)
         LOG(LOG_ERROR, "Failed to set of object /3/0/2");
-
+    AwaClientSetOperation_Free(&operation);
     disconnectAwa(session);
 }
 
@@ -343,6 +343,7 @@ static AwaError setIPSO(AwaClientSession *session, int objectId, int instance, i
     AwaClientSetOperation_AddValueAsFloat(operation, &buf[0], value);
     AwaError result = AwaClientSetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
     LOG(LOG_DEBUG, "Awa set response: %d", result);
+    AwaClientSetOperation_Free(&operation);
     return result;
 }
 
