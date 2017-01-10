@@ -124,21 +124,10 @@ establishes the connection against the device server. Execute on Ci40 console:
  awa_clientd --bootstrap coaps://deviceserver.creatordev.io:15684 -s -c /root/certificate.crt --endPointName "weather_station" -o /usr/bin/weather-station/object_definitions.xml -d
 ```
 **Note:** As the client is running as a daemon on background, any log will be 
-displayed on the console. However is possible to verify the process running on 
+displayed on the console. However it is possible to verify the process running on
 background.
 
-3. Then, you have to provide and map IPSO object definitions for each sensor.
-On **/usr/bin** you can find a script to execute the mapping. Execute on Ci40
-console:
-
-```bash
-cd /usr/bin
-./clientObjectsDefine.sh
-```
-
-**NOTE:** Make sure the AwaLWM2M Client Daemon is working. 
-
-4. Finaly, connect a [thermo3 click] (http://www.mikroe.com/click/thermo3/) in 
+3. Finaly, connect a [thermo3 click] (http://www.mikroe.com/click/thermo3/) in
 Ci40 MikroBUS 1 and execute the application.
 
 ```bash
