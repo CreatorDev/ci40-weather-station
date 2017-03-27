@@ -31,7 +31,10 @@
 #include <awa/common.h>
 #include <awa/client.h>
 #include <awa/types.h>
+#include <glib.h>
 #include "log.h"
+#include "wu.h"
+#include "types.h"
 
 #define OPERATION_PERFORM_TIMEOUT       (1000)
 #define DEFAULT_SLEEP_TIME              (60)
@@ -48,14 +51,7 @@
 
 typedef float (*SensorReadFunc)(uint8_t);
 
-typedef enum {
-    ClickType_None,
-    ClickType_Thermo3,
-    ClickType_Weather,
-    ClickType_Thunder,
-    ClickType_AirQuality,
-    ClickType_CODetector
-} ClickType;
+
 
 static const struct element {
     char* name;
@@ -75,25 +71,28 @@ typedef struct {
     unsigned int sleepTime;     // in seconds
     char address[16];
     int port;
+    bool useWeatherUnderground;
+    char wuID[100];
+    char wuPassword[200];
 } options;
 
 static const struct option long_options[] = {
     { "click1", required_argument, 0, '1' },
     { "click2", required_argument, 0, '2' },
     { "bus", required_argument, 0, 'b'},
-    { "logLevel", required_argument, 0, 'v'},
+    { "logLevel", required_argument, 0, 'l'},
     { "help", no_argument, 0, 'h'},
     { "sleep", required_argument, 0, 's'},
     { "port", required_argument, 0, 'p'},
-    { 0, 0, 0, 0 }
+    { "wu", no_argument, 0, 'w'},
+    { "wuID", required_argument, 0, 'v'},
+    { "wuPassword", required_argument, 0, 'u'},
+    { 0, 0, 0, 0}
 };
 
-struct measurement {
-    struct measurement *next;
-    int objID;
-    int instance;
-    float value;
-};
+
+
+
 
 int g_LogLevel = LOG_INFO;
 FILE* g_DebugStream;
@@ -118,25 +117,29 @@ static ClickType configDecodeClickType(char* type) {
 static void printUsage(const char *program)
 {
     printf("Usage: %s [options]\n\n"
-        " -1, --click1   : Type of click installed in microBus slot 1 (default:none)\n"
-        "                  air, co, none, thermo3, thunder, weather\n"
-        " -2, --click2   : Type of click installed in microBus slot 2 (default:none)\n"
-        "                  air, co, none, thermo3, thunder, weather\n"
-        " -s, --sleep    : delay between measurements in seconds. (default: %ds)\n"
-        " -a, --address  : Address to connect to AWA client daemon (default: %s)\n"
-        " -p, --port     : Port to connect to AWA client daemon. (default: %d)\n"
-        " -v, --logLevel : Debug level from 1 to 5\n"
-        "                   fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)\n"
-        "                   default is info.\n"
-        " -h, --help     : prints this help\n",
+        " -1, --click1     : Type of click installed in microBus slot 1 (default:none)\n"
+        "                    air, co, none, thermo3, thunder, weather\n"
+        " -2, --click2     : Type of click installed in microBus slot 2 (default:none)\n"
+        "                    air, co, none, thermo3, thunder, weather\n"
+        " -s, --sleep      : delay between measurements in seconds. (default: %ds)\n"
+        " -a, --address    : Address to connect to AWA client daemon (default: %s)\n"
+        " -p, --port       : Port to connect to AWA client daemon. (default: %d)\n"
+        " -l, --logLevel   : Debug level from 1 to 5\n"
+        "                     fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)\n"
+        "                     default is info.\n"
+        " -w, --wu         : Flag determining whether to send data to weather undeground service\n"
+        " -v, --wuID       : ID of your weather underground station\n"
+        " -u, --wuPassword : Password of your weather underground station\n"
+        " -h, --help       : prints this help\n",
         program, DEFAULT_SLEEP_TIME, DEFAULT_CLIENT_DAEMON_ADDRESS, DEFAULT_CLIENT_DAEMON_PORT);
 }
 
 static bool loadConfiguration(int argc, char **argv, options *opts) {
+
     bool success = true;
     int c;
 
-    while ((c = getopt_long(argc, argv, "s:1:2:c:b:hv:p:a:", long_options, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "s:1:2:hv:p:a:wv:u:", long_options, NULL)) != -1) {
         switch (c) {
             case '1':
                 opts->click1 = configDecodeClickType(optarg);
@@ -182,7 +185,7 @@ static bool loadConfiguration(int argc, char **argv, options *opts) {
                 }
                 break;
 
-            case 'v':
+            case 'l':
                 errno = 0;
                 g_LogLevel = strtol(optarg, NULL, 10);
                 if ((errno == ERANGE && (g_LogLevel == LONG_MAX || g_LogLevel == LONG_MIN))
@@ -192,6 +195,28 @@ static bool loadConfiguration(int argc, char **argv, options *opts) {
                     LOG(LOG_ERROR, "Failed to parse log level option.\n");
                 }
                 break;
+            case 'w':
+                opts->useWeatherUnderground = true;
+                break;
+            case 'v':
+                errno = 0;
+                if (strlen(optarg) >= sizeof(opts->wuID)) {
+                    success = false;
+                    LOG(LOG_ERROR, "Failed to parse weather underground ID option.\n");
+                }
+                strcpy(opts->wuID, optarg);
+                break;
+
+            case 'u':
+                errno = 0;
+                if (strlen(optarg) >= sizeof(opts->wuPassword))
+                {
+                    success = false;
+                    LOG(LOG_ERROR, "Failed to parse weather underground password option.\n");
+                }
+                strcpy(opts->wuPassword, optarg);
+                break;
+
 
             case 'h':
                 printUsage(argv[0]);
@@ -381,7 +406,7 @@ static float getIPSO(AwaClientSession *session, int objectId, int instance, int 
     return resultValue;
 }
 
-static void sendMeasurement(AwaClientSession *session, struct measurement m) {
+static void sendMeasurementToDeviceServer(AwaClientSession *session, struct measurement m) {
     float minValue = getIPSO(session, m.objID, m.instance, 5601, 1000);
     float maxValue = getIPSO(session, m.objID, m.instance, 5602, -1000);
 
@@ -392,7 +417,9 @@ static void sendMeasurement(AwaClientSession *session, struct measurement m) {
         setIPSOwithRetry(session, m.objID, m.instance, 5602, m.value);
 }
 
-static void addMeasurement(struct measurement **measurements, int objId, int instance, float value)
+
+
+static void addMeasurement(struct measurement **measurements, int objId, int instance, float value, MeasurementType type)
 {
     struct measurement *m = malloc(sizeof(struct measurement));
     if (!m) {
@@ -404,6 +431,7 @@ static void addMeasurement(struct measurement **measurements, int objId, int ins
     m->objID = objId;
     m->instance = instance;
     m->value = value;
+    m->type = type;
 
     if (*measurements == NULL)
         *measurements = m;
@@ -415,9 +443,9 @@ static void addMeasurement(struct measurement **measurements, int objId, int ins
     }
 }
 
-static void handleMeasurements(uint8_t bus, int objId, int instance, SensorReadFunc sensorFunc, struct measurement **measurements) {
+static void handleMeasurements(uint8_t bus, int objId, int instance, SensorReadFunc sensorFunc, struct measurement **measurements, MeasurementType type) {
     float value = sensorFunc(bus);
-    addMeasurement(measurements, objId, instance, value);
+    addMeasurement(measurements, objId, instance, value, type);
 }
 
 static void handleWeatherMeasurements(uint8_t busIndex,
@@ -429,15 +457,15 @@ static void handleWeatherMeasurements(uint8_t busIndex,
     }
     LOG(LOG_INFO, "Reading weather measurements: temp = %f, pressure = %f, humidity = %f",
                 data[0], data[1], data[2]);
-    addMeasurement(measurements, TEMPERATURE_IPSO_OBJECT_ID, temperatureInstance, data[0]);
-    addMeasurement(measurements, BAROMETER_IPSO_OBJECT_ID, pressureInstance, data[1]);
-    addMeasurement(measurements, HUMIDITY_IPSO_OBJECT_ID, humidityInstance, data[2]);
+    addMeasurement(measurements, TEMPERATURE_IPSO_OBJECT_ID, temperatureInstance, data[0], MeasurementType_Temperature);
+    addMeasurement(measurements, BAROMETER_IPSO_OBJECT_ID, pressureInstance, data[1], MeasurementType_Pressure);
+    addMeasurement(measurements, HUMIDITY_IPSO_OBJECT_ID, humidityInstance, data[2], MeasurementType_Humidity);
 }
 
 static void performMeasurements(ClickType clickType, uint8_t busIndex, struct measurement **measurements, int *instances) {
     switch (clickType) {
         case ClickType_Thermo3:
-            handleMeasurements(busIndex, TEMPERATURE_IPSO_OBJECT_ID, instances[0]++, &readThermo3, measurements);
+            handleMeasurements(busIndex, TEMPERATURE_IPSO_OBJECT_ID, instances[0]++, &readThermo3, measurements, MeasurementType_Temperature);
             break;
         case ClickType_Weather:
             handleWeatherMeasurements(busIndex,
@@ -449,21 +477,21 @@ static void performMeasurements(ClickType clickType, uint8_t busIndex, struct me
         case ClickType_Thunder:
             break;
         case ClickType_AirQuality:
-            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readAirQuality, measurements);
+            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readAirQuality, measurements, MeasurementType_AirQuality);
             break;
         case ClickType_CODetector:
-            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readCO, measurements);
+            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readCO, measurements, MeasurementType_COConcentration);
             break;
         default:
             break;
     }
 }
 
-static void sendMeasurements(AwaClientSession *session, struct measurement *measurements)
+static void sendMeasurementsToDeviceServer(AwaClientSession *session, struct measurement *measurements)
 {
     struct measurement *ptr = measurements;
     while (ptr) {
-        sendMeasurement(session, *ptr);
+        sendMeasurementToDeviceServer(session, *ptr);
         ptr = ptr->next;
     }
 }
@@ -518,8 +546,9 @@ static int release_click(ClickType clickType, uint8_t busIndex) {
             }
             break;
         default:
-            break;
+            return 0;
     }
+    return 0;
 
 }
 
@@ -530,6 +559,9 @@ int main(int argc, char **argv) {
         .sleepTime = DEFAULT_SLEEP_TIME,
         .address = DEFAULT_CLIENT_DAEMON_ADDRESS,
         .port = DEFAULT_CLIENT_DAEMON_PORT,
+        .wuID = "",
+        .wuPassword = "",
+        .useWeatherUnderground = false
     };
     struct sigaction action = {
         .sa_handler = exitApp,
@@ -544,6 +576,21 @@ int main(int argc, char **argv) {
         LOG(LOG_ERROR, "Failed to set Control+C handler\n");
         return -1;
     }
+
+    if (opts.useWeatherUnderground == true) {
+        if (strlen(opts.wuID) == 0 || strlen(opts.wuPassword) == 0) {
+            g_error("You need to specify weather undeground station ID and PASSWORD to use weather underground service. See '--help'.");
+        }
+        wu_init(opts.wuID, opts.wuPassword, opts.sleepTime);
+    }
+
+
+//    struct measurement *measurements = NULL;
+//    addMeasurement(&measurements, TEMPERATURE_IPSO_OBJECT_ID, 0, 25.4, MeasurementType_Temperature);
+//    addMeasurement(&measurements, HUMIDITY_IPSO_OBJECT_ID, 0, 56, MeasurementType_Humidity);
+//    addMeasurement(&measurements, BAROMETER_IPSO_OBJECT_ID, 0, 1200, MeasurementType_Pressure);
+//    addMeasurement(&measurements, CONCENTRATION_IPSO_OBJECT_ID, 0, 1000, MeasurementType_COConcentration);
+//    wu_send_measurements(measurements);
 
     if (i2c_init() < 0) {
         LOG(LOG_ERROR, "Failed to initialize I2C.\n");
@@ -573,13 +620,19 @@ int main(int argc, char **argv) {
             struct measurement *measurements = NULL;
             performMeasurements(opts.click1, MIKROBUS_1, &measurements, instances);
             performMeasurements(opts.click2, MIKROBUS_2, &measurements, instances);
-            sendMeasurements(session, measurements);
+            sendMeasurementsToDeviceServer(session, measurements);
+            if (opts.useWeatherUnderground == true && measurements != NULL) {
+                wu_send_measurements(measurements);
+            }
             releaseMeasurements(measurements);
             disconnectAwa(session);
         }
         sleep(opts.sleepTime);
     }
 
+    if (opts.useWeatherUnderground == true) {
+        wu_release();
+    }
     release_click(opts.click1, MIKROBUS_1);
     release_click(opts.click2, MIKROBUS_2);
     i2c_release();
