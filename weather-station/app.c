@@ -1,0 +1,674 @@
+/************************************************************************************************************************
+ Copyright (c) 2016, Imagination Technologies Limited and/or its affiliated group companies.
+ All rights reserved.
+ Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+ following conditions are met:
+     1. Redistributions of source code must retain the above copyright notice, this list of conditions and the
+        following disclaimer.
+     2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+        following disclaimer in the documentation and/or other materials provided with the distribution.
+     3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote
+        products derived from this software without specific prior written permission.
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+************************************************************************************************************************/
+
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <letmecreate/letmecreate.h>
+#include <getopt.h>
+#include <string.h>
+#include <awa/common.h>
+#include <awa/client.h>
+#include <awa/types.h>
+#include <glib.h>
+#include "wu.h"
+#include "types.h"
+
+#define OPERATION_PERFORM_TIMEOUT       (1000)
+#define DEFAULT_SLEEP_TIME              (60)
+#define DEFAULT_CLIENT_DAEMON_ADDRESS   "127.0.0.1"
+#define DEFAULT_CLIENT_DAEMON_PORT      (12345)
+
+#define TEMPERATURE_IPSO_OBJECT_ID      (3303)
+#define HUMIDITY_IPSO_OBJECT_ID         (3304)
+#define BAROMETER_IPSO_OBJECT_ID        (3315)
+#define CONCENTRATION_IPSO_OBJECT_ID    (3325)
+#define DISTANCE_IPSO_OBJECT_ID         (3330)
+#define POWER_IPSO_OBJECT_ID            (3328)
+
+
+typedef float (*SensorReadFunc)(uint8_t);
+
+
+
+static const struct element {
+    char* name;
+    ClickType type;
+} types[] = {
+    {"air", ClickType_AirQuality},
+    {"co", ClickType_CODetector},
+    {"thermo3", ClickType_Thermo3},
+    {"thunder", ClickType_Thunder},
+    {"weather", ClickType_Weather},
+    {NULL, -1}
+};
+
+typedef struct {
+    ClickType click1;
+    ClickType click2;
+    unsigned int sleepTime;     // in seconds
+    char address[16];
+    int port;
+    bool useWeatherUnderground;
+    char wuID[100];
+    char wuPassword[200];
+    unsigned int logLevel;
+} options;
+
+static const struct option long_options[] = {
+    { "click1", required_argument, 0, '1' },
+    { "click2", required_argument, 0, '2' },
+    { "bus", required_argument, 0, 'b'},
+    { "logLevel", required_argument, 0, 'l'},
+    { "help", no_argument, 0, 'h'},
+    { "sleep", required_argument, 0, 's'},
+    { "port", required_argument, 0, 'p'},
+    { "wu", no_argument, 0, 'w'},
+    { "wuID", required_argument, 0, 'v'},
+    { "wuPassword", required_argument, 0, 'u'},
+    { 0, 0, 0, 0}
+};
+
+
+FILE* g_DebugStream;
+static volatile bool _Running = true;
+
+static void exitApp(int __attribute__((unused))(signo)) {
+    _Running = false;
+}
+
+static void initLogger(int logLevel) {
+
+    GLogLevelFlags targetFlags = G_LOG_FLAG_RECURSION;
+    switch(logLevel) {
+        case 5: //debug
+            targetFlags |= G_LOG_LEVEL_DEBUG | G_LOG_LEVEL_INFO | G_LOG_LEVEL_MESSAGE | G_LOG_LEVEL_WARNING |
+                G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR;
+            g_setenv("G_MESSAGES_DEBUG", "all", FALSE);
+            break;
+
+        case 4: //info
+            targetFlags |= G_LOG_LEVEL_INFO | G_LOG_LEVEL_MESSAGE | G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL |
+                G_LOG_LEVEL_ERROR;
+            g_setenv("G_MESSAGES_DEBUG", "all", FALSE);
+            break;
+
+        case 3: //message
+            targetFlags |= G_LOG_LEVEL_MESSAGE | G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR;
+            g_setenv("G_MESSAGES_DEBUG", "all", FALSE);
+            break;
+
+        default:
+        case 2: //warning
+            targetFlags |= G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR;
+            break;
+
+        case 1: //error (critical);
+            targetFlags |= G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR;
+            break;
+    }
+    //set new handlers per flags
+    g_log_set_handler (NULL, targetFlags, g_log_default_handler, NULL);
+}
+
+static ClickType configDecodeClickType(char* type) {
+    const struct element* iter = types;
+    while (iter->name != NULL) {
+        if (strcasecmp(iter->name, type) == 0)
+            return iter->type;
+
+        iter++;
+    }
+
+    return ClickType_None;
+}
+
+static void printUsage(const char *program)
+{
+    printf("Usage: %s [options]\n\n"
+        " -1, --click1     : Type of click installed in microBus slot 1 (default:none)\n"
+        "                    air, co, none, thermo3, thunder, weather\n"
+        " -2, --click2     : Type of click installed in microBus slot 2 (default:none)\n"
+        "                    air, co, none, thermo3, thunder, weather\n"
+        " -s, --sleep      : delay between measurements in seconds. (default: %ds)\n"
+        " -a, --address    : Address to connect to AWA client daemon (default: %s)\n"
+        " -p, --port       : Port to connect to AWA client daemon. (default: %d)\n"
+        " -l, --logLevel   : Debug level from 1 to 5\n"
+        "                     fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)\n"
+        "                     default is info.\n"
+        " -w, --wu         : Flag determining whether to send data to weather undeground service\n"
+        " -v, --wuID       : ID of your weather underground station\n"
+        " -u, --wuPassword : Password of your weather underground station\n"
+        " -h, --help       : prints this help\n",
+        program, DEFAULT_SLEEP_TIME, DEFAULT_CLIENT_DAEMON_ADDRESS, DEFAULT_CLIENT_DAEMON_PORT);
+}
+
+static bool loadConfiguration(int argc, char **argv, options *opts) {
+
+    bool success = true;
+    int c;
+
+    while ((c = getopt_long(argc, argv, "s:1:2:hv:p:a:wv:u:l:", long_options, NULL)) != -1) {
+        switch (c) {
+            case '1':
+                opts->click1 = configDecodeClickType(optarg);
+                if (opts->click1 == ClickType_None) {
+                    success = false;
+                    g_critical("Failed to parse click1 option.\n");
+                }
+                break;
+
+            case '2':
+                opts->click2 = configDecodeClickType(optarg);
+                if (opts->click2 == ClickType_None) {
+                    success = false;
+                    g_critical("Failed to parse click2 option.\n");
+                }
+                break;
+
+            case 's':
+                errno = 0;
+                opts->sleepTime = strtoul(optarg, NULL, 10);
+                if ((opts->sleepTime == ULONG_MAX && errno == ERANGE)
+                ||  (opts->sleepTime == 0 && errno != 0)) {
+                    success = false;
+                    g_critical("Failed to parse sleep option.\n");
+                }
+                break;
+
+            case 'a':
+                if (strlen(optarg) >= sizeof(opts->address)) {
+                    success = false;
+                    g_critical("Failed to parse address option.\n");
+                }
+                strcpy(opts->address, optarg);
+                break;
+
+            case 'p':
+                errno = 0;
+                opts->port = strtol(optarg, NULL, 10);
+                if ((errno == ERANGE && (opts->port == LONG_MAX || opts->port == LONG_MIN))
+                ||  (errno != 0 && opts->port == 0)) {
+                    success = false;
+                    g_critical("Failed to parse port option.\n");
+                }
+                break;
+
+            case 'l':
+                errno = 0;
+                opts->logLevel = strtol(optarg, NULL, 10);
+                if ((errno == ERANGE && (opts->logLevel == LONG_MAX || opts->logLevel == LONG_MIN))
+                ||  (errno != 0 && opts->logLevel == 0)) {
+                    success = false;
+                    g_critical("Failed to parse log level option.\n");
+                }
+                break;
+            case 'w':
+                opts->useWeatherUnderground = true;
+                break;
+            case 'v':
+                errno = 0;
+                if (strlen(optarg) >= sizeof(opts->wuID)) {
+                    success = false;
+                    g_critical("Failed to parse weather underground ID option.\n");
+                }
+                strcpy(opts->wuID, optarg);
+                break;
+
+            case 'u':
+                errno = 0;
+                if (strlen(optarg) >= sizeof(opts->wuPassword))
+                {
+                    success = false;
+                    g_critical("Failed to parse weather underground password option.\n");
+                }
+                strcpy(opts->wuPassword, optarg);
+                break;
+
+
+            case 'h':
+                printUsage(argv[0]);
+                exit(0);
+
+            case '?':
+                /* getopt_long already printed an error message. */
+                success = false;
+                break;
+
+            default:
+                abort();
+        }
+    }
+
+    return success;
+}
+
+static float readThermo3(uint8_t busIndex) {
+    g_debug("Reading thermo3 on bus#%d", busIndex);
+    float temperature = 0.f;
+
+    i2c_select_bus(busIndex);
+    if (thermo3_click_get_temperature(&temperature) < 0)
+        g_critical("Reading temperature measurement failed!");
+
+    return temperature;
+}
+
+static float readCO(uint8_t busIndex) {
+    g_debug("Reading CO on bus#%d", busIndex);
+    uint16_t value = 0;
+
+    if (co_click_get_measure(busIndex, &value) < 0)
+        g_critical("Reading CO measurement failed!");
+
+    return value;
+}
+
+static float readAirQuality(uint8_t busIndex) {
+    g_debug("Reading air quality on bus#%d", busIndex);
+    uint16_t value = 0;
+
+    if (air_quality_click_get_measure(busIndex, &value) < 0)
+        g_critical("Reading air quality measurement failed!");
+
+    return value;
+}
+
+static uint8_t readWeather(uint8_t busIndex, double* data) {
+    g_debug("Reading weather on bus#%d", busIndex);
+
+    i2c_select_bus(busIndex);
+    if (weather_click_read_measurements(&data[0], &data[1], &data[2]) < 0) {
+        g_critical("Reading weather measurements failed!");
+        return -1;
+    }
+
+    return 0;
+}
+
+static AwaClientSession* connectToAwa(char *address, int port) {
+    AwaClientSession *session = AwaClientSession_New();
+    if (!session) {
+        g_critical("AwaClientSession_New() failed\n");
+        return NULL;
+    }
+
+    if (AwaClientSession_SetIPCAsUDP(session, address, port) != AwaError_Success) {
+        g_critical("AwaClientSession_SetIPCAsUDP() failed\n");
+        AwaClientSession_Free(&session);
+        return NULL;
+    }
+
+    if (AwaClientSession_Connect(session) != AwaError_Success) {
+        g_critical("AwaClientSession_Connect() failed\n");
+        AwaClientSession_Free(&session);
+        return NULL;
+    }
+
+    g_message("Client Session Established: %s:%d\n", address, port);
+
+    return session;
+}
+
+static void disconnectAwa(AwaClientSession *session) {
+    if (!session)
+        return;
+
+    AwaClientSession_Disconnect(session);
+    AwaClientSession_Free(&session);
+}
+
+static void readSerialNumberFromEthernetMAC(char *address, int port)
+{
+    char mac_address[18];
+    FILE *file = fopen("/sys/class/net/eth0/address", "r");
+    if (!file) {
+        g_critical("Could not read ethernet mac address.\n");
+        return;
+    }
+
+    if (fread(mac_address, 1, 17, file) != 17) {
+        fclose(file);
+        return;
+    }
+
+    fclose(file);
+
+    mac_address[17] = '\0';
+
+    AwaClientSession* session = connectToAwa(address, port);
+    if (!session)
+        return;
+
+    AwaClientSetOperation* operation = AwaClientSetOperation_New(session);
+    AwaClientSetOperation_AddValueAsCString(operation, "/3/0/2", mac_address);
+    AwaError result = AwaClientSetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
+    if (result != AwaError_Success)
+        g_critical("Failed to set of object /3/0/2");
+    AwaClientSetOperation_Free(&operation);
+    disconnectAwa(session);
+}
+
+static void createIPSO(AwaClientSession *session, int objectId, int instance, int resourceId) {
+    AwaClientSetOperation * operation = AwaClientSetOperation_New(session);
+
+    char buf[40];
+    if (resourceId == -1) {
+        sprintf(&buf[0], "/%d/%d", objectId, instance);
+        AwaClientSetOperation_CreateObjectInstance(operation, &buf[0]);
+
+    } else {
+        sprintf(&buf[0], "/%d/%d/%d", objectId, instance, resourceId);
+        g_message("Creating instance of resource %s", &buf[0]);
+        AwaClientSetOperation_CreateOptionalResource(operation, &buf[0]);
+    }
+
+    AwaError result = AwaClientSetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
+    g_debug("Awa create response: %d", result);
+    AwaClientSetOperation_Free(&operation);
+}
+
+static AwaError setIPSO(AwaClientSession *session, int objectId, int instance, int resourceId, float value) {
+    char buf[40];
+    sprintf(&buf[0], "/%d/%d/%d", objectId, instance, resourceId);
+    g_message("Storing value %0.3f into %s", value, &buf[0]);
+    AwaClientSetOperation* operation = AwaClientSetOperation_New(session);
+    AwaClientSetOperation_AddValueAsFloat(operation, &buf[0], value);
+    AwaError result = AwaClientSetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
+    g_debug("Awa set response: %d", result);
+    AwaClientSetOperation_Free(&operation);
+    return result;
+}
+
+static void setIPSOwithRetry(AwaClientSession *session, int objectId, int instance, int resourceId, float value) {
+    if (setIPSO(session, objectId, instance, resourceId, value) != AwaError_Success) {
+        g_critical("Failed to set IPSO object /%d/%d/%d. Retrying...\n", objectId, instance, resourceId);
+        createIPSO(session, objectId, instance, -1);
+        createIPSO(session, objectId, instance, resourceId);
+        setIPSO(session, objectId, instance, resourceId, value);
+    }
+}
+
+static float getIPSO(AwaClientSession *session, int objectId, int instance, int resourceId, float defaultValue) {
+    char buf[40];
+    sprintf(&buf[0], "/%d/%d/%d", objectId, instance, resourceId);
+    g_debug("Getting value of %s", &buf[0]);
+    AwaClientGetOperation * operation = AwaClientGetOperation_New(session);
+
+    AwaClientGetOperation_AddPath(operation, &buf[0]);
+    AwaError result = AwaClientGetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
+    if (result != AwaError_Success) {
+        AwaClientGetOperation_Free(&operation);
+        return defaultValue;
+    }
+
+    const AwaFloat* value;
+    float resultValue;
+
+    const AwaClientGetResponse* response = AwaClientGetOperation_GetResponse(operation);
+    AwaClientGetResponse_GetValueAsFloatPointer(response, (const char*)&buf[0], &value);
+    resultValue = (float)*value;
+    g_debug("Got value %f\n", (float)resultValue);
+
+    AwaClientGetOperation_Free(&operation);
+    return resultValue;
+}
+
+static void sendMeasurementToDeviceServer(AwaClientSession *session, struct measurement m) {
+    float minValue = getIPSO(session, m.objID, m.instance, 5601, 1000);
+    float maxValue = getIPSO(session, m.objID, m.instance, 5602, -1000);
+
+    setIPSOwithRetry(session, m.objID, m.instance, 5700, m.value);
+    if (minValue > m.value)
+        setIPSOwithRetry(session, m.objID, m.instance, 5601, m.value);
+    if (maxValue < m.value)
+        setIPSOwithRetry(session, m.objID, m.instance, 5602, m.value);
+}
+
+
+
+static void addMeasurement(struct measurement **measurements, int objId, int instance, float value, MeasurementType type)
+{
+    struct measurement *m = malloc(sizeof(struct measurement));
+    if (!m) {
+        g_critical("Failed to allocate memory for a measurement.\n");
+        return;
+    }
+
+    m->next = NULL;
+    m->objID = objId;
+    m->instance = instance;
+    m->value = value;
+    m->type = type;
+
+    if (*measurements == NULL)
+        *measurements = m;
+    else {
+        struct measurement *last = *measurements;
+        while (last->next)
+            last = last->next;
+        last->next = m;
+    }
+}
+
+static void handleMeasurements(uint8_t bus, int objId, int instance, SensorReadFunc sensorFunc, struct measurement **measurements, MeasurementType type) {
+    float value = sensorFunc(bus);
+    addMeasurement(measurements, objId, instance, value, type);
+}
+
+static void handleWeatherMeasurements(uint8_t busIndex,
+        int temperatureInstance, int pressureInstance, int humidityInstance, struct measurement **measurements) {
+    double data[] = {0,0,0};
+    if (readWeather(busIndex, data) < 0) {
+        g_critical("Reading weather on bus#%d failed!", busIndex);
+        return;
+    }
+    g_message("Reading weather measurements: temp = %f, pressure = %f, humidity = %f",
+                data[0], data[1], data[2]);
+    addMeasurement(measurements, TEMPERATURE_IPSO_OBJECT_ID, temperatureInstance, data[0], MeasurementType_Temperature);
+    addMeasurement(measurements, BAROMETER_IPSO_OBJECT_ID, pressureInstance, data[1], MeasurementType_Pressure);
+    addMeasurement(measurements, HUMIDITY_IPSO_OBJECT_ID, humidityInstance, data[2], MeasurementType_Humidity);
+}
+
+static void performMeasurements(ClickType clickType, uint8_t busIndex, struct measurement **measurements, int *instances) {
+    switch (clickType) {
+        case ClickType_Thermo3:
+            handleMeasurements(busIndex, TEMPERATURE_IPSO_OBJECT_ID, instances[0]++, &readThermo3, measurements, MeasurementType_Temperature);
+            break;
+        case ClickType_Weather:
+            handleWeatherMeasurements(busIndex,
+                    instances[0]++,
+                    instances[1]++,
+                    instances[2]++,
+                    measurements);
+            break;
+        case ClickType_Thunder:
+            break;
+        case ClickType_AirQuality:
+            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readAirQuality, measurements, MeasurementType_AirQuality);
+            break;
+        case ClickType_CODetector:
+            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readCO, measurements, MeasurementType_COConcentration);
+            break;
+        default:
+            break;
+    }
+}
+
+static void sendMeasurementsToDeviceServer(AwaClientSession *session, struct measurement *measurements)
+{
+    struct measurement *ptr = measurements;
+    while (ptr) {
+        sendMeasurementToDeviceServer(session, *ptr);
+        ptr = ptr->next;
+    }
+}
+
+static void releaseMeasurements(struct measurement *measurements)
+{
+    struct measurement *ptr = measurements;
+    while (ptr) {
+        struct measurement *next = ptr->next;
+        free(ptr);
+        ptr = next;
+    }
+}
+
+static int initialize_click(ClickType clickType, uint8_t busIndex) {
+    i2c_select_bus(busIndex);
+    switch (clickType) {
+        case ClickType_Thermo3:
+            if (thermo3_click_enable(0) < 0) {
+                g_critical("Failed to enable thermo3 click on bus#%d\n", busIndex);
+                return -1;
+            }
+            break;
+        case ClickType_Weather:
+            if (weather_click_enable() < 0) {
+                g_critical("Failed to enable weather click on bus#%d\n", busIndex);
+                return -1;
+            }
+            break;
+
+            //TODO: add rest if needed
+        default:
+            break;
+    }
+
+    return 0;
+}
+
+static int release_click(ClickType clickType, uint8_t busIndex) {
+    i2c_select_bus(busIndex);
+    switch (clickType) {
+        case ClickType_Thermo3:
+            if (thermo3_click_disable() < 0) {
+                g_critical("Failed to disable thermo3 click on bus#%d\n", busIndex);
+                return -1;
+            }
+            break;
+        case ClickType_Weather:
+            if (weather_click_disable() < 0) {
+                g_critical("Failed to disable weather click on bus#%d\n", busIndex);
+                return -1;
+            }
+            break;
+        default:
+            return 0;
+    }
+    return 0;
+
+}
+
+int main(int argc, char **argv) {
+    options opts = {
+        .click1 = ClickType_None,
+        .click2 = ClickType_None,
+        .sleepTime = DEFAULT_SLEEP_TIME,
+        .address = DEFAULT_CLIENT_DAEMON_ADDRESS,
+        .logLevel = 3,
+        .port = DEFAULT_CLIENT_DAEMON_PORT,
+        .wuID = "",
+        .wuPassword = "",
+        .useWeatherUnderground = false
+    };
+
+    struct sigaction action = {
+        .sa_handler = exitApp,
+        .sa_flags = 0
+    };
+
+    if (loadConfiguration(argc, argv, &opts) == false)
+        return -1;
+
+    if (sigemptyset(&action.sa_mask) < 0
+    ||  sigaction(SIGINT, &action, NULL) < 0) {
+        g_critical("Failed to set Control+C handler\n");
+        return -1;
+    }
+
+    if (opts.useWeatherUnderground == true) {
+        if (strlen(opts.wuID) == 0 || strlen(opts.wuPassword) == 0) {
+            g_error("You need to specify weather undeground station ID and PASSWORD to use weather underground service. See '--help'.");
+        }
+        wu_init(opts.wuID, opts.wuPassword, opts.sleepTime);
+    }
+
+    initLogger(opts.logLevel);
+
+
+//    struct measurement *measurements = NULL;
+//    addMeasurement(&measurements, TEMPERATURE_IPSO_OBJECT_ID, 0, 25.4, MeasurementType_Temperature);
+//    addMeasurement(&measurements, HUMIDITY_IPSO_OBJECT_ID, 0, 56, MeasurementType_Humidity);
+//    addMeasurement(&measurements, BAROMETER_IPSO_OBJECT_ID, 0, 1200, MeasurementType_Pressure);
+//    addMeasurement(&measurements, CONCENTRATION_IPSO_OBJECT_ID, 0, 1000, MeasurementType_COConcentration);
+//    wu_send_measurements(measurements);
+
+    if (i2c_init() < 0) {
+        g_critical("Failed to initialize I2C.\n");
+        return -1;
+    }
+
+    if (initialize_click(opts.click1, MIKROBUS_1) < 0
+    ||  initialize_click(opts.click2, MIKROBUS_2) < 0) {
+        i2c_release();
+        return -1;
+    }
+
+    readSerialNumberFromEthernetMAC(opts.address, opts.port);
+
+    while(_Running) {
+        AwaClientSession* session = connectToAwa(opts.address, opts.port);
+        if (session) {
+            //contains last used instance ids for all registered sensors
+            int instances[6] = {
+                0,  //3303 (temperature)
+                0,  //3304 (humidity)
+                0,  //3315 (barometer)
+                0,  //3325 (concentration)
+                0,  //3330 (distance)
+                0   //3328 (power)
+            };
+            struct measurement *measurements = NULL;
+            performMeasurements(opts.click1, MIKROBUS_1, &measurements, instances);
+            performMeasurements(opts.click2, MIKROBUS_2, &measurements, instances);
+            sendMeasurementsToDeviceServer(session, measurements);
+            if (opts.useWeatherUnderground == true && measurements != NULL) {
+                wu_send_measurements(measurements);
+            }
+            releaseMeasurements(measurements);
+            disconnectAwa(session);
+        }
+        sleep(opts.sleepTime);
+    }
+
+    if (opts.useWeatherUnderground == true) {
+        wu_release();
+    }
+    release_click(opts.click1, MIKROBUS_1);
+    release_click(opts.click2, MIKROBUS_2);
+    i2c_release();
+
+    return 0;
+}
