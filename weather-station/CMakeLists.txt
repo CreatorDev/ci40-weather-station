@@ -3,7 +3,7 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
 include_directories(${STAGING_DIR} ${STAGING_DIR}/usr/include/glib-2.0 ${STAGING_DIR}/usr/include/curl)
 # Add executable targets
 ########################
-ADD_EXECUTABLE(weatherStation dumpReading.c wu.c)
+ADD_EXECUTABLE(weatherStation app.c wu.c)
 
 # Add library targets
 #####################
