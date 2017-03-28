@@ -64,26 +64,26 @@ opkg install package_name
 ### Building From Source
 
 This process fits for the most developers who want to edit and build from the 
-source code, confortable setting the building environment for OpenWRT applications. 
+source code, comfortable setting the building environment for OpenWRT applications. 
 
 It's assumed that you have build envriroment for Ci40 openWrt described on
 [docs.creatordev.io](https://docs.creatordev.io/ci40/guides/creating-applications).
 
 You need to clone this repository into your feed directory and then tell openwrt to
-update your feeds
+update your feeds. Go to feed directory and call
     # git clone https://github.com/CreatorDev/ci40-weather-station.git weather-station
 
-Then go to
-    # ./scripts/feeds update weather-station-gateway
-    # ./scripts/feeds install weather-station-gateway
+Then go to openwrt directory and call
+    # ./scripts/feeds update -a && ./scripts/feeds install -a
 
+To build weather-station package call
+    # make package/weather-station/compile
 
-In menuconfig please press `/` and type `weather-station` one occurrence 
-will appear. Mark it with `<*>` and do save of config.
+If you want to build ipk that can be then istalled on Ci40 using opkg package manager
+open openwrt menuconfig end mark weather-station app with an (*). Then call
+    # make package/weather-station/install
 
-In terminal type `make/package/ci40-weather-station` to build openwrt image with this application.
-After uploading to Ci40 edit file located in `/etc/init.d/weather_station_initd` 
-and put proper switch arguments related to clicks which you put into mikroBus port.
+Generated ipk can be found in openwrt/bin directory.
 
 ---
 
@@ -97,7 +97,7 @@ Ci40.
 described in the previous steps.  
 
 1. First of all go to 
-[**Creator Developer Console**](http://console.creatordev.io/), create an account 
+[**Creator Developer Console**](http://console.creatordev.io/), create an account
 and create a certificate. Certificates are used to establish a secure connection,
 between the AwaLWM2M Client (Ci40) and the Device Server. Then, transfer your
 **certificate.crt** into Ci40.  
@@ -153,6 +153,9 @@ This option will print the following table, on your Ci40 console:
 |-2, --click2   | Type of click installed in microBUS slot 2 (default:none)|
 |-s, --sleep    | Delay between measurements in seconds. (default: 60s)|
 |-v, --logLevel | Debug level from 1 to 5 (default:info): fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)|
+|-w, --wu       | enable weather underground service |
+|-v, --wuID     | weather underground station ID |
+|-u, --wuPassword | weather underground station password | 
 |-h, --help     | prints help|
 
 On section [Supported Clicks](#supported-clicks) you can find also the arguments,
