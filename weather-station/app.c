@@ -623,16 +623,6 @@ int main(int argc, char **argv) {
         wu_init(opts.wuID, opts.wuPassword, opts.sleepTime);
     }
 
-
-
-
-//    struct measurement *measurements = NULL;
-//    addMeasurement(&measurements, TEMPERATURE_IPSO_OBJECT_ID, 0, 25.4, MeasurementType_Temperature);
-//    addMeasurement(&measurements, HUMIDITY_IPSO_OBJECT_ID, 0, 56, MeasurementType_Humidity);
-//    addMeasurement(&measurements, BAROMETER_IPSO_OBJECT_ID, 0, 1200, MeasurementType_Pressure);
-//    addMeasurement(&measurements, CONCENTRATION_IPSO_OBJECT_ID, 0, 1000, MeasurementType_COConcentration);
-//    wu_send_measurements(measurements);
-
     if (i2c_init() < 0) {
         g_critical("Failed to initialize I2C.\n");
         return -1;
