@@ -582,6 +582,8 @@ static int release_click(ClickType clickType, uint8_t busIndex) {
 }
 
 int main(int argc, char **argv) {
+
+
     options opts = {
         .click1 = ClickType_None,
         .click2 = ClickType_None,
@@ -594,13 +596,19 @@ int main(int argc, char **argv) {
         .useWeatherUnderground = false
     };
 
+
     struct sigaction action = {
         .sa_handler = exitApp,
         .sa_flags = 0
     };
 
+    initLogger(opts.logLevel);
+
     if (loadConfiguration(argc, argv, &opts) == false)
         return -1;
+
+    // init logger with logLevel passed to program
+    initLogger(opts.logLevel);
 
     if (sigemptyset(&action.sa_mask) < 0
     ||  sigaction(SIGINT, &action, NULL) < 0) {
@@ -615,7 +623,7 @@ int main(int argc, char **argv) {
         wu_init(opts.wuID, opts.wuPassword, opts.sleepTime);
     }
 
-    initLogger(opts.logLevel);
+
 
 
 //    struct measurement *measurements = NULL;
