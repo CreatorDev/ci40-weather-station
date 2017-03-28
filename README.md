@@ -28,7 +28,7 @@ implementation of OMA Lightweight M2M protocol. Awa provides a secure and standa
 compliant device management solution, without the need for an intimate knowledge of 
 M2M protocols.  
 The MikroE Clicks (sensors) use
-[LetMeCreate](https://github.com/francois-berder/LetMeCreate), an open source library 
+[LetMeCreate](https://github.com/creatorDev/LetMeCreate), an open source library 
 design to speed up the development with Ci40.
 
 
@@ -66,37 +66,22 @@ opkg install package_name
 This process fits for the most developers who want to edit and build from the 
 source code, confortable setting the building environment for OpenWRT applications. 
 
-It's assumed that you have build envriroment for Ci40 openWrt described 
-[here](https://github.com/CreatorKit/build) and this is located in folder `work`. 
-So structure inside will be:
+It's assumed that you have build envriroment for Ci40 openWrt described on
+[docs.creatordev.io](https://docs.creatordev.io/ci40/guides/creating-applications).
 
-    work/
-      build/  
-      constrained-os/  
-      dist/
-      packages/
+You need to clone this repository into your feed directory and then tell openwrt to
+update your feeds
+    # git clone https://github.com/CreatorDev/ci40-weather-station.git weather-station
 
-Clone this repository into `work/packages`, after this operation structure will look:
+Then go to
+    # ./scripts/feeds update weather-station-gateway
+    # ./scripts/feeds install weather-station-gateway
 
-    work/
-      build/  
-      constrained-os/  
-      dist/
-      packages/
-        weather-station-gateway
 
-Now copy folder from `packages/weather-station-gateway/feeds` into `work/dist/openwrt-ckt-feeds`.
-Then execute commands:
-
-    cd work/dist/openwrt
-    ./scripts/feeds update
-    ./scripts/feeds update weather-station-gateway
-    ./scripts/feeds install weather-station-gateway
-    make menuconfig
-
-In menuconfig please press `/` and type `weather-station-gateway` one occurrence 
+In menuconfig please press `/` and type `weather-station` one occurrence 
 will appear. Mark it with `<*>` and do save of config.
-In terminal type `make` to build openwrt image with this application.
+
+In terminal type `make/package/ci40-weather-station` to build openwrt image with this application.
 After uploading to Ci40 edit file located in `/etc/init.d/weather_station_initd` 
 and put proper switch arguments related to clicks which you put into mikroBus port.
 
