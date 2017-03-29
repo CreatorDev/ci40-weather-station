@@ -1,5 +1,5 @@
 /************************************************************************************************************************
- Copyright (c) 2016, Imagination Technologies Limited and/or its affiliated group companies.
+ Copyright (c) 2017, Imagination Technologies Limited and/or its affiliated group companies.
  All rights reserved.
  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
  following conditions are met:
@@ -31,7 +31,9 @@
 #include <awa/common.h>
 #include <awa/client.h>
 #include <awa/types.h>
-#include "log.h"
+#include <glib.h>
+#include "wu.h"
+#include "types.h"
 
 #define OPERATION_PERFORM_TIMEOUT       (1000)
 #define DEFAULT_SLEEP_TIME              (60)
@@ -48,14 +50,7 @@
 
 typedef float (*SensorReadFunc)(uint8_t);
 
-typedef enum {
-    ClickType_None,
-    ClickType_Thermo3,
-    ClickType_Weather,
-    ClickType_Thunder,
-    ClickType_AirQuality,
-    ClickType_CODetector
-} ClickType;
+
 
 static const struct element {
     char* name;
@@ -75,32 +70,66 @@ typedef struct {
     unsigned int sleepTime;     // in seconds
     char address[16];
     int port;
+    bool useWeatherUnderground;
+    char wuID[100];
+    char wuPassword[200];
+    unsigned int logLevel;
 } options;
 
 static const struct option long_options[] = {
     { "click1", required_argument, 0, '1' },
     { "click2", required_argument, 0, '2' },
     { "bus", required_argument, 0, 'b'},
-    { "logLevel", required_argument, 0, 'v'},
+    { "logLevel", required_argument, 0, 'l'},
     { "help", no_argument, 0, 'h'},
     { "sleep", required_argument, 0, 's'},
     { "port", required_argument, 0, 'p'},
-    { 0, 0, 0, 0 }
+    { "wu", no_argument, 0, 'w'},
+    { "wuID", required_argument, 0, 'v'},
+    { "wuPassword", required_argument, 0, 'u'},
+    { 0, 0, 0, 0}
 };
 
-struct measurement {
-    struct measurement *next;
-    int objID;
-    int instance;
-    float value;
-};
 
-int g_LogLevel = LOG_INFO;
 FILE* g_DebugStream;
 static volatile bool _Running = true;
 
 static void exitApp(int __attribute__((unused))(signo)) {
     _Running = false;
+}
+
+static void initLogger(int logLevel) {
+
+    GLogLevelFlags targetFlags = G_LOG_FLAG_RECURSION;
+    switch(logLevel) {
+        case 5: //debug
+            targetFlags |= G_LOG_LEVEL_DEBUG | G_LOG_LEVEL_INFO | G_LOG_LEVEL_MESSAGE | G_LOG_LEVEL_WARNING |
+                G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR;
+            g_setenv("G_MESSAGES_DEBUG", "all", FALSE);
+            break;
+
+        case 4: //info
+            targetFlags |= G_LOG_LEVEL_INFO | G_LOG_LEVEL_MESSAGE | G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL |
+                G_LOG_LEVEL_ERROR;
+            g_setenv("G_MESSAGES_DEBUG", "all", FALSE);
+            break;
+
+        case 3: //message
+            targetFlags |= G_LOG_LEVEL_MESSAGE | G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR;
+            g_setenv("G_MESSAGES_DEBUG", "all", FALSE);
+            break;
+
+        default:
+        case 2: //warning
+            targetFlags |= G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR;
+            break;
+
+        case 1: //error (critical);
+            targetFlags |= G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_ERROR;
+            break;
+    }
+    //set new handlers per flags
+    g_log_set_handler (NULL, targetFlags, g_log_default_handler, NULL);
 }
 
 static ClickType configDecodeClickType(char* type) {
@@ -118,31 +147,35 @@ static ClickType configDecodeClickType(char* type) {
 static void printUsage(const char *program)
 {
     printf("Usage: %s [options]\n\n"
-        " -1, --click1   : Type of click installed in microBus slot 1 (default:none)\n"
-        "                  air, co, none, thermo3, thunder, weather\n"
-        " -2, --click2   : Type of click installed in microBus slot 2 (default:none)\n"
-        "                  air, co, none, thermo3, thunder, weather\n"
-        " -s, --sleep    : delay between measurements in seconds. (default: %ds)\n"
-        " -a, --address  : Address to connect to AWA client daemon (default: %s)\n"
-        " -p, --port     : Port to connect to AWA client daemon. (default: %d)\n"
-        " -v, --logLevel : Debug level from 1 to 5\n"
-        "                   fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)\n"
-        "                   default is info.\n"
-        " -h, --help     : prints this help\n",
+        " -1, --click1     : Type of click installed in microBus slot 1 (default:none)\n"
+        "                    air, co, none, thermo3, thunder, weather\n"
+        " -2, --click2     : Type of click installed in microBus slot 2 (default:none)\n"
+        "                    air, co, none, thermo3, thunder, weather\n"
+        " -s, --sleep      : delay between measurements in seconds. (default: %ds)\n"
+        " -a, --address    : Address to connect to AWA client daemon (default: %s)\n"
+        " -p, --port       : Port to connect to AWA client daemon. (default: %d)\n"
+        " -l, --logLevel   : Debug level from 1 to 5\n"
+        "                     fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)\n"
+        "                     default is info.\n"
+        " -w, --wu         : Flag determining whether to send data to weather undeground service\n"
+        " -v, --wuID       : ID of your weather underground station\n"
+        " -u, --wuPassword : Password of your weather underground station\n"
+        " -h, --help       : prints this help\n",
         program, DEFAULT_SLEEP_TIME, DEFAULT_CLIENT_DAEMON_ADDRESS, DEFAULT_CLIENT_DAEMON_PORT);
 }
 
 static bool loadConfiguration(int argc, char **argv, options *opts) {
+
     bool success = true;
     int c;
 
-    while ((c = getopt_long(argc, argv, "s:1:2:c:b:hv:p:a:", long_options, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "s:1:2:hv:p:a:wv:u:l:", long_options, NULL)) != -1) {
         switch (c) {
             case '1':
                 opts->click1 = configDecodeClickType(optarg);
                 if (opts->click1 == ClickType_None) {
                     success = false;
-                    LOG(LOG_ERROR, "Failed to parse click1 option.\n");
+                    g_critical("Failed to parse click1 option.\n");
                 }
                 break;
 
@@ -150,7 +183,7 @@ static bool loadConfiguration(int argc, char **argv, options *opts) {
                 opts->click2 = configDecodeClickType(optarg);
                 if (opts->click2 == ClickType_None) {
                     success = false;
-                    LOG(LOG_ERROR, "Failed to parse click2 option.\n");
+                    g_critical("Failed to parse click2 option.\n");
                 }
                 break;
 
@@ -160,14 +193,14 @@ static bool loadConfiguration(int argc, char **argv, options *opts) {
                 if ((opts->sleepTime == ULONG_MAX && errno == ERANGE)
                 ||  (opts->sleepTime == 0 && errno != 0)) {
                     success = false;
-                    LOG(LOG_ERROR, "Failed to parse sleep option.\n");
+                    g_critical("Failed to parse sleep option.\n");
                 }
                 break;
 
             case 'a':
                 if (strlen(optarg) >= sizeof(opts->address)) {
                     success = false;
-                    LOG(LOG_ERROR, "Failed to parse address option.\n");
+                    g_critical("Failed to parse address option.\n");
                 }
                 strcpy(opts->address, optarg);
                 break;
@@ -178,20 +211,41 @@ static bool loadConfiguration(int argc, char **argv, options *opts) {
                 if ((errno == ERANGE && (opts->port == LONG_MAX || opts->port == LONG_MIN))
                 ||  (errno != 0 && opts->port == 0)) {
                     success = false;
-                    LOG(LOG_ERROR, "Failed to parse port option.\n");
+                    g_critical("Failed to parse port option.\n");
                 }
                 break;
 
-            case 'v':
+            case 'l':
                 errno = 0;
-                g_LogLevel = strtol(optarg, NULL, 10);
-                if ((errno == ERANGE && (g_LogLevel == LONG_MAX || g_LogLevel == LONG_MIN))
-                ||  (errno != 0 && g_LogLevel == 0)) {
+                opts->logLevel = strtol(optarg, NULL, 10);
+                if ((errno == ERANGE && (opts->logLevel == LONG_MAX || opts->logLevel == LONG_MIN))
+                ||  (errno != 0 && opts->logLevel == 0)) {
                     success = false;
-                    g_LogLevel = LOG_INFO; /* Revert back to default log level */
-                    LOG(LOG_ERROR, "Failed to parse log level option.\n");
+                    g_critical("Failed to parse log level option.\n");
                 }
                 break;
+            case 'w':
+                opts->useWeatherUnderground = true;
+                break;
+            case 'v':
+                errno = 0;
+                if (strlen(optarg) >= sizeof(opts->wuID)) {
+                    success = false;
+                    g_critical("Failed to parse weather underground ID option.\n");
+                }
+                strcpy(opts->wuID, optarg);
+                break;
+
+            case 'u':
+                errno = 0;
+                if (strlen(optarg) >= sizeof(opts->wuPassword))
+                {
+                    success = false;
+                    g_critical("Failed to parse weather underground password option.\n");
+                }
+                strcpy(opts->wuPassword, optarg);
+                break;
+
 
             case 'h':
                 printUsage(argv[0]);
@@ -211,42 +265,42 @@ static bool loadConfiguration(int argc, char **argv, options *opts) {
 }
 
 static float readThermo3(uint8_t busIndex) {
-    LOG(LOG_DEBUG, "Reading thermo3 on bus#%d", busIndex);
+    g_debug("Reading thermo3 on bus#%d", busIndex);
     float temperature = 0.f;
 
     i2c_select_bus(busIndex);
     if (thermo3_click_get_temperature(&temperature) < 0)
-        LOG(LOG_ERROR, "Reading temperature measurement failed!");
+        g_critical("Reading temperature measurement failed!");
 
     return temperature;
 }
 
 static float readCO(uint8_t busIndex) {
-    LOG(LOG_DEBUG, "Reading CO on bus#%d", busIndex);
+    g_debug("Reading CO on bus#%d", busIndex);
     uint16_t value = 0;
 
     if (co_click_get_measure(busIndex, &value) < 0)
-        LOG(LOG_ERROR, "Reading CO measurement failed!");
+        g_critical("Reading CO measurement failed!");
 
     return value;
 }
 
 static float readAirQuality(uint8_t busIndex) {
-    LOG(LOG_DEBUG, "Reading air quality on bus#%d", busIndex);
+    g_debug("Reading air quality on bus#%d", busIndex);
     uint16_t value = 0;
 
     if (air_quality_click_get_measure(busIndex, &value) < 0)
-        LOG(LOG_ERROR, "Reading air quality measurement failed!");
+        g_critical("Reading air quality measurement failed!");
 
     return value;
 }
 
 static uint8_t readWeather(uint8_t busIndex, double* data) {
-    LOG(LOG_DEBUG, "Reading weather on bus#%d", busIndex);
+    g_debug("Reading weather on bus#%d", busIndex);
 
     i2c_select_bus(busIndex);
     if (weather_click_read_measurements(&data[0], &data[1], &data[2]) < 0) {
-        LOG(LOG_ERROR, "Reading weather measurements failed!");
+        g_critical("Reading weather measurements failed!");
         return -1;
     }
 
@@ -256,23 +310,23 @@ static uint8_t readWeather(uint8_t busIndex, double* data) {
 static AwaClientSession* connectToAwa(char *address, int port) {
     AwaClientSession *session = AwaClientSession_New();
     if (!session) {
-        LOG(LOG_ERROR, "AwaClientSession_New() failed\n");
+        g_critical("AwaClientSession_New() failed\n");
         return NULL;
     }
 
     if (AwaClientSession_SetIPCAsUDP(session, address, port) != AwaError_Success) {
-        LOG(LOG_ERROR, "AwaClientSession_SetIPCAsUDP() failed\n");
+        g_critical("AwaClientSession_SetIPCAsUDP() failed\n");
         AwaClientSession_Free(&session);
         return NULL;
     }
 
     if (AwaClientSession_Connect(session) != AwaError_Success) {
-        LOG(LOG_ERROR, "AwaClientSession_Connect() failed\n");
+        g_critical("AwaClientSession_Connect() failed\n");
         AwaClientSession_Free(&session);
         return NULL;
     }
 
-    LOG(LOG_INFO, "Client Session Established: %s:%d\n", address, port);
+    g_message("Client Session Established: %s:%d\n", address, port);
 
     return session;
 }
@@ -290,7 +344,7 @@ static void readSerialNumberFromEthernetMAC(char *address, int port)
     char mac_address[18];
     FILE *file = fopen("/sys/class/net/eth0/address", "r");
     if (!file) {
-        LOG(LOG_ERROR, "Could not read ethernet mac address.\n");
+        g_critical("Could not read ethernet mac address.\n");
         return;
     }
 
@@ -311,7 +365,7 @@ static void readSerialNumberFromEthernetMAC(char *address, int port)
     AwaClientSetOperation_AddValueAsCString(operation, "/3/0/2", mac_address);
     AwaError result = AwaClientSetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
     if (result != AwaError_Success)
-        LOG(LOG_ERROR, "Failed to set of object /3/0/2");
+        g_critical("Failed to set of object /3/0/2");
     AwaClientSetOperation_Free(&operation);
     disconnectAwa(session);
 }
@@ -326,30 +380,30 @@ static void createIPSO(AwaClientSession *session, int objectId, int instance, in
 
     } else {
         sprintf(&buf[0], "/%d/%d/%d", objectId, instance, resourceId);
-        LOG(LOG_INFO, "Creating instance of resource %s", &buf[0]);
+        g_message("Creating instance of resource %s", &buf[0]);
         AwaClientSetOperation_CreateOptionalResource(operation, &buf[0]);
     }
 
     AwaError result = AwaClientSetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
-    LOG(LOG_DEBUG, "Awa create response: %d", result);
+    g_debug("Awa create response: %d", result);
     AwaClientSetOperation_Free(&operation);
 }
 
 static AwaError setIPSO(AwaClientSession *session, int objectId, int instance, int resourceId, float value) {
     char buf[40];
     sprintf(&buf[0], "/%d/%d/%d", objectId, instance, resourceId);
-    LOG(LOG_INFO, "Storing value %0.3f into %s", value, &buf[0]);
+    g_message("Storing value %0.3f into %s", value, &buf[0]);
     AwaClientSetOperation* operation = AwaClientSetOperation_New(session);
     AwaClientSetOperation_AddValueAsFloat(operation, &buf[0], value);
     AwaError result = AwaClientSetOperation_Perform(operation, OPERATION_PERFORM_TIMEOUT);
-    LOG(LOG_DEBUG, "Awa set response: %d", result);
+    g_debug("Awa set response: %d", result);
     AwaClientSetOperation_Free(&operation);
     return result;
 }
 
 static void setIPSOwithRetry(AwaClientSession *session, int objectId, int instance, int resourceId, float value) {
     if (setIPSO(session, objectId, instance, resourceId, value) != AwaError_Success) {
-        LOG(LOG_ERROR, "Failed to set IPSO object /%d/%d/%d. Retrying...\n", objectId, instance, resourceId);
+        g_critical("Failed to set IPSO object /%d/%d/%d. Retrying...\n", objectId, instance, resourceId);
         createIPSO(session, objectId, instance, -1);
         createIPSO(session, objectId, instance, resourceId);
         setIPSO(session, objectId, instance, resourceId, value);
@@ -359,7 +413,7 @@ static void setIPSOwithRetry(AwaClientSession *session, int objectId, int instan
 static float getIPSO(AwaClientSession *session, int objectId, int instance, int resourceId, float defaultValue) {
     char buf[40];
     sprintf(&buf[0], "/%d/%d/%d", objectId, instance, resourceId);
-    LOG(LOG_DEBUG, "Getting value of %s", &buf[0]);
+    g_debug("Getting value of %s", &buf[0]);
     AwaClientGetOperation * operation = AwaClientGetOperation_New(session);
 
     AwaClientGetOperation_AddPath(operation, &buf[0]);
@@ -375,13 +429,13 @@ static float getIPSO(AwaClientSession *session, int objectId, int instance, int 
     const AwaClientGetResponse* response = AwaClientGetOperation_GetResponse(operation);
     AwaClientGetResponse_GetValueAsFloatPointer(response, (const char*)&buf[0], &value);
     resultValue = (float)*value;
-    LOG(LOG_DEBUG, "Got value %f\n", (float)resultValue);
+    g_debug("Got value %f\n", (float)resultValue);
 
     AwaClientGetOperation_Free(&operation);
     return resultValue;
 }
 
-static void sendMeasurement(AwaClientSession *session, struct measurement m) {
+static void sendMeasurementToDeviceServer(AwaClientSession *session, struct measurement m) {
     float minValue = getIPSO(session, m.objID, m.instance, 5601, 1000);
     float maxValue = getIPSO(session, m.objID, m.instance, 5602, -1000);
 
@@ -392,11 +446,13 @@ static void sendMeasurement(AwaClientSession *session, struct measurement m) {
         setIPSOwithRetry(session, m.objID, m.instance, 5602, m.value);
 }
 
-static void addMeasurement(struct measurement **measurements, int objId, int instance, float value)
+
+
+static void addMeasurement(struct measurement **measurements, int objId, int instance, float value, MeasurementType type)
 {
     struct measurement *m = malloc(sizeof(struct measurement));
     if (!m) {
-        LOG(LOG_ERROR, "Failed to allocate memory for a measurement.\n");
+        g_critical("Failed to allocate memory for a measurement.\n");
         return;
     }
 
@@ -404,6 +460,7 @@ static void addMeasurement(struct measurement **measurements, int objId, int ins
     m->objID = objId;
     m->instance = instance;
     m->value = value;
+    m->type = type;
 
     if (*measurements == NULL)
         *measurements = m;
@@ -415,29 +472,29 @@ static void addMeasurement(struct measurement **measurements, int objId, int ins
     }
 }
 
-static void handleMeasurements(uint8_t bus, int objId, int instance, SensorReadFunc sensorFunc, struct measurement **measurements) {
+static void handleMeasurements(uint8_t bus, int objId, int instance, SensorReadFunc sensorFunc, struct measurement **measurements, MeasurementType type) {
     float value = sensorFunc(bus);
-    addMeasurement(measurements, objId, instance, value);
+    addMeasurement(measurements, objId, instance, value, type);
 }
 
 static void handleWeatherMeasurements(uint8_t busIndex,
         int temperatureInstance, int pressureInstance, int humidityInstance, struct measurement **measurements) {
     double data[] = {0,0,0};
     if (readWeather(busIndex, data) < 0) {
-        LOG(LOG_ERROR, "Reading weather on bus#%d failed!", busIndex);
+        g_critical("Reading weather on bus#%d failed!", busIndex);
         return;
     }
-    LOG(LOG_INFO, "Reading weather measurements: temp = %f, pressure = %f, humidity = %f",
+    g_message("Reading weather measurements: temp = %f, pressure = %f, humidity = %f",
                 data[0], data[1], data[2]);
-    addMeasurement(measurements, TEMPERATURE_IPSO_OBJECT_ID, temperatureInstance, data[0]);
-    addMeasurement(measurements, BAROMETER_IPSO_OBJECT_ID, pressureInstance, data[1]);
-    addMeasurement(measurements, HUMIDITY_IPSO_OBJECT_ID, humidityInstance, data[2]);
+    addMeasurement(measurements, TEMPERATURE_IPSO_OBJECT_ID, temperatureInstance, data[0], MeasurementType_Temperature);
+    addMeasurement(measurements, BAROMETER_IPSO_OBJECT_ID, pressureInstance, data[1], MeasurementType_Pressure);
+    addMeasurement(measurements, HUMIDITY_IPSO_OBJECT_ID, humidityInstance, data[2], MeasurementType_Humidity);
 }
 
 static void performMeasurements(ClickType clickType, uint8_t busIndex, struct measurement **measurements, int *instances) {
     switch (clickType) {
         case ClickType_Thermo3:
-            handleMeasurements(busIndex, TEMPERATURE_IPSO_OBJECT_ID, instances[0]++, &readThermo3, measurements);
+            handleMeasurements(busIndex, TEMPERATURE_IPSO_OBJECT_ID, instances[0]++, &readThermo3, measurements, MeasurementType_Temperature);
             break;
         case ClickType_Weather:
             handleWeatherMeasurements(busIndex,
@@ -449,21 +506,21 @@ static void performMeasurements(ClickType clickType, uint8_t busIndex, struct me
         case ClickType_Thunder:
             break;
         case ClickType_AirQuality:
-            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readAirQuality, measurements);
+            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readAirQuality, measurements, MeasurementType_AirQuality);
             break;
         case ClickType_CODetector:
-            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readCO, measurements);
+            handleMeasurements(busIndex, CONCENTRATION_IPSO_OBJECT_ID, instances[3]++, &readCO, measurements, MeasurementType_COConcentration);
             break;
         default:
             break;
     }
 }
 
-static void sendMeasurements(AwaClientSession *session, struct measurement *measurements)
+static void sendMeasurementsToDeviceServer(AwaClientSession *session, struct measurement *measurements)
 {
     struct measurement *ptr = measurements;
     while (ptr) {
-        sendMeasurement(session, *ptr);
+        sendMeasurementToDeviceServer(session, *ptr);
         ptr = ptr->next;
     }
 }
@@ -483,13 +540,13 @@ static int initialize_click(ClickType clickType, uint8_t busIndex) {
     switch (clickType) {
         case ClickType_Thermo3:
             if (thermo3_click_enable(0) < 0) {
-                LOG(LOG_ERROR, "Failed to enable thermo3 click on bus#%d\n", busIndex);
+                g_critical("Failed to enable thermo3 click on bus#%d\n", busIndex);
                 return -1;
             }
             break;
         case ClickType_Weather:
             if (weather_click_enable() < 0) {
-                LOG(LOG_ERROR, "Failed to enable weather click on bus#%d\n", busIndex);
+                g_critical("Failed to enable weather click on bus#%d\n", busIndex);
                 return -1;
             }
             break;
@@ -507,46 +564,67 @@ static int release_click(ClickType clickType, uint8_t busIndex) {
     switch (clickType) {
         case ClickType_Thermo3:
             if (thermo3_click_disable() < 0) {
-                LOG(LOG_ERROR, "Failed to disable thermo3 click on bus#%d\n", busIndex);
+                g_critical("Failed to disable thermo3 click on bus#%d\n", busIndex);
                 return -1;
             }
             break;
         case ClickType_Weather:
             if (weather_click_disable() < 0) {
-                LOG(LOG_ERROR, "Failed to disable weather click on bus#%d\n", busIndex);
+                g_critical("Failed to disable weather click on bus#%d\n", busIndex);
                 return -1;
             }
             break;
         default:
-            break;
+            return 0;
     }
+    return 0;
 
 }
 
 int main(int argc, char **argv) {
+
+
     options opts = {
         .click1 = ClickType_None,
         .click2 = ClickType_None,
         .sleepTime = DEFAULT_SLEEP_TIME,
         .address = DEFAULT_CLIENT_DAEMON_ADDRESS,
+        .logLevel = 3,
         .port = DEFAULT_CLIENT_DAEMON_PORT,
+        .wuID = "",
+        .wuPassword = "",
+        .useWeatherUnderground = false
     };
+
+
     struct sigaction action = {
         .sa_handler = exitApp,
         .sa_flags = 0
     };
 
+    initLogger(opts.logLevel);
+
     if (loadConfiguration(argc, argv, &opts) == false)
         return -1;
 
+    // init logger with logLevel passed to program
+    initLogger(opts.logLevel);
+
     if (sigemptyset(&action.sa_mask) < 0
     ||  sigaction(SIGINT, &action, NULL) < 0) {
-        LOG(LOG_ERROR, "Failed to set Control+C handler\n");
+        g_critical("Failed to set Control+C handler\n");
         return -1;
     }
 
+    if (opts.useWeatherUnderground == true) {
+        if (strlen(opts.wuID) == 0 || strlen(opts.wuPassword) == 0) {
+            g_error("You need to specify weather undeground station ID and PASSWORD to use weather underground service. See '--help'.");
+        }
+        wu_init(opts.wuID, opts.wuPassword, opts.sleepTime);
+    }
+
     if (i2c_init() < 0) {
-        LOG(LOG_ERROR, "Failed to initialize I2C.\n");
+        g_critical("Failed to initialize I2C.\n");
         return -1;
     }
 
@@ -573,13 +651,19 @@ int main(int argc, char **argv) {
             struct measurement *measurements = NULL;
             performMeasurements(opts.click1, MIKROBUS_1, &measurements, instances);
             performMeasurements(opts.click2, MIKROBUS_2, &measurements, instances);
-            sendMeasurements(session, measurements);
+            sendMeasurementsToDeviceServer(session, measurements);
+            if (opts.useWeatherUnderground == true && measurements != NULL) {
+                wu_send_measurements(measurements);
+            }
             releaseMeasurements(measurements);
             disconnectAwa(session);
         }
         sleep(opts.sleepTime);
     }
 
+    if (opts.useWeatherUnderground == true) {
+        wu_release();
+    }
     release_click(opts.click1, MIKROBUS_1);
     release_click(opts.click2, MIKROBUS_2);
     i2c_release();

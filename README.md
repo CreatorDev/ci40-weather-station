@@ -19,7 +19,8 @@ The complete IoT Environment is built using the following components:
 * Ci40 Application - allows the usage of clicks in mikroBUS sockets
 * Contiki based applications - build for 6LoWPAN clicker platform:
   *  [Temperature Sensor](https://github.com/CreatorKit/temperature-sensor)
-* Mobile Application - presents weather measurements  
+* [Mobile Application](https://github.com/CreatorDev/android-weather-station) - presents weather measurements  
+
 
 ## Application Dependencies
 
@@ -28,7 +29,7 @@ implementation of OMA Lightweight M2M protocol. Awa provides a secure and standa
 compliant device management solution, without the need for an intimate knowledge of 
 M2M protocols.  
 The MikroE Clicks (sensors) use
-[LetMeCreate](https://github.com/francois-berder/LetMeCreate), an open source library 
+[LetMeCreate](https://github.com/creatorDev/LetMeCreate), an open source library 
 design to speed up the development with Ci40.
 
 
@@ -64,41 +65,26 @@ opkg install package_name
 ### Building From Source
 
 This process fits for the most developers who want to edit and build from the 
-source code, confortable setting the building environment for OpenWRT applications. 
+source code, comfortable setting the building environment for OpenWRT applications. 
 
-It's assumed that you have build envriroment for Ci40 openWrt described 
-[here](https://github.com/CreatorKit/build) and this is located in folder `work`. 
-So structure inside will be:
+It's assumed that you have build envriroment for Ci40 openWrt described on
+[docs.creatordev.io](https://docs.creatordev.io/ci40/guides/creating-applications).
 
-    work/
-      build/  
-      constrained-os/  
-      dist/
-      packages/
+You need to clone this repository into your feed directory and then tell openwrt to
+update your feeds. Go to feed directory and call
+    `# git clone https://github.com/CreatorDev/ci40-weather-station.git weather-station`
 
-Clone this repository into `work/packages`, after this operation structure will look:
+Then go to openwrt directory and call
+    `# ./scripts/feeds update -a && ./scripts/feeds install -a`
 
-    work/
-      build/  
-      constrained-os/  
-      dist/
-      packages/
-        weather-station-gateway
+To build weather-station package call
+    `# make package/weather-station/compile`
 
-Now copy folder from `packages/weather-station-gateway/feeds` into `work/dist/openwrt-ckt-feeds`.
-Then execute commands:
+If you want to build ipk that can be then istalled on Ci40 using opkg package manager
+open openwrt menuconfig end mark weather-station app with an (*). Then call
+    `# make package/weather-station/install`
 
-    cd work/dist/openwrt
-    ./scripts/feeds update
-    ./scripts/feeds update weather-station-gateway
-    ./scripts/feeds install weather-station-gateway
-    make menuconfig
-
-In menuconfig please press `/` and type `weather-station-gateway` one occurrence 
-will appear. Mark it with `<*>` and do save of config.
-In terminal type `make` to build openwrt image with this application.
-After uploading to Ci40 edit file located in `/etc/init.d/weather_station_initd` 
-and put proper switch arguments related to clicks which you put into mikroBus port.
+Generated ipk can be found in openwrt/bin directory.
 
 ---
 
@@ -112,7 +98,7 @@ Ci40.
 described in the previous steps.  
 
 1. First of all go to 
-[**Creator Developer Console**](http://console.creatordev.io/), create an account 
+[**Creator Developer Console**](http://console.creatordev.io/), create an account
 and create a certificate. Certificates are used to establish a secure connection,
 between the AwaLWM2M Client (Ci40) and the Device Server. Then, transfer your
 **certificate.crt** into Ci40.  
@@ -151,6 +137,15 @@ in this project you can use:
 | [Thunder](http://www.mikroe.com/click/thunder/)         | thunder                      |
 | [Weather](http://www.mikroe.com/click/weather/)         | weather                      |
 
+## Integrating with Weather Underground Service
+Weather Underground is a service that gathers weather measurements from weather stations all 
+around the world. You can connect this application to weather underground by specifying a
+station id and password. Before that you need to create account and register a station 
+[here](https://www.wunderground.com/personal-weather-station/signup).
+
+Once done you need to start application with -wu, --wuID and --wuPassword parameters as
+described in table below.
+
 
 ## Help
 
@@ -168,6 +163,9 @@ This option will print the following table, on your Ci40 console:
 |-2, --click2   | Type of click installed in microBUS slot 2 (default:none)|
 |-s, --sleep    | Delay between measurements in seconds. (default: 60s)|
 |-v, --logLevel | Debug level from 1 to 5 (default:info): fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)|
+|-w, --wu       | enable weather underground service |
+|-v, --wuID     | weather underground station ID |
+|-u, --wuPassword | weather underground station password | 
 |-h, --help     | prints help|
 
 On section [Supported Clicks](#supported-clicks) you can find also the arguments,
