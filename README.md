@@ -19,7 +19,8 @@ The complete IoT Environment is built using the following components:
 * Ci40 Application - allows the usage of clicks in mikroBUS sockets
 * Contiki based applications - build for 6LoWPAN clicker platform:
   *  [Temperature Sensor](https://github.com/CreatorKit/temperature-sensor)
-* Mobile Application - presents weather measurements  
+* [Mobile Application](https://github.com/CreatorDev/android-weather-station) - presents weather measurements  
+
 
 ## Application Dependencies
 
@@ -71,17 +72,17 @@ It's assumed that you have build envriroment for Ci40 openWrt described on
 
 You need to clone this repository into your feed directory and then tell openwrt to
 update your feeds. Go to feed directory and call
-    # git clone https://github.com/CreatorDev/ci40-weather-station.git weather-station
+    `# git clone https://github.com/CreatorDev/ci40-weather-station.git weather-station`
 
 Then go to openwrt directory and call
-    # ./scripts/feeds update -a && ./scripts/feeds install -a
+    `# ./scripts/feeds update -a && ./scripts/feeds install -a`
 
 To build weather-station package call
-    # make package/weather-station/compile
+    `# make package/weather-station/compile`
 
 If you want to build ipk that can be then istalled on Ci40 using opkg package manager
 open openwrt menuconfig end mark weather-station app with an (*). Then call
-    # make package/weather-station/install
+    `# make package/weather-station/install`
 
 Generated ipk can be found in openwrt/bin directory.
 
@@ -135,6 +136,15 @@ in this project you can use:
 | [Thermo3](http://www.mikroe.com/click/thermo3/)         | thermo3                      |
 | [Thunder](http://www.mikroe.com/click/thunder/)         | thunder                      |
 | [Weather](http://www.mikroe.com/click/weather/)         | weather                      |
+
+## Integrating with Weather Underground Service
+Weather Underground is a service that gathers weather measurements from weather stations all 
+around the world. You can connect this application to weather underground by specifying a
+station id and password. Before that you need to create account and register a station 
+[here](https://www.wunderground.com/personal-weather-station/signup).
+
+Once done you need to start application with -wu, --wuID and --wuPassword parameters as
+described in table below.
 
 
 ## Help
