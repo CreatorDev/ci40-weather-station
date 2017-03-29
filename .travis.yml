@@ -8,11 +8,11 @@ before_install:
   - sudo apt-get -qq update
   - sudo apt-get install -y gnupg git-core build-essential libssl-dev libncurses5-dev unzip gawk subversion mercurial
 script:
-  - export MAKEFILE_SOURCE_DIR="$TRAVIS_BUILD_DIR/feeds/ci40-weather-station"
+  - export MAKEFILE_SOURCE_DIR="$TRAVIS_BUILD_DIR"
   - export MAKEFILE_DEST_DIR="$HOME/build/custom_feed/ci40-weather-station"
   - export MAKEFILE_DEST_PATH="$MAKEFILE_DEST_DIR/Makefile"
   - mkdir -p $MAKEFILE_DEST_DIR
-  - cp "$MAKEFILE_SOURCE_DIR/Makefile" $MAKEFILE_DEST_PATH
+  - cp -a "$TRAVIS_BUILD_DIR/." "$MAKEFILE_DEST_DIR/"
   - sed -i "s/^PKG_VERSION.*/PKG_VERSION:=HEAD/g" $MAKEFILE_DEST_PATH
   - sed -i "s#^PKG_SOURCE_URL.*#PKG_SOURCE_URL:=$TRAVIS_BUILD_DIR#g" $MAKEFILE_DEST_PATH
   - export CI40_FILE_URL="$CI40_SDK_URL$CI40_SDK.tar.bz2"
@@ -20,4 +20,6 @@ script:
   - cd $CI40_SDK && echo src-link custom $HOME/build/custom_feed  >> feeds.conf.default
   - ./scripts/feeds update -a && ./scripts/feeds install -a
   - make package/awalwm2m/compile
+  - make package/glib2/compile
+  - make package/curl/compile
   - make package/ci40-weather-station/compile -j1 V=s
